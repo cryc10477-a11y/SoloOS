@@ -7,15 +7,36 @@
   "scripts": {
     "dev": "node scripts/dev.cjs",
     "build": "vite build",
+    "package:mac": "npm run build && electron-builder --mac dir",
     "start": "electron ."
   },
+  "build": {
+    "appId": "com.soloos.desktop",
+    "productName": "SoloOS",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "main/**/*",
+      "preload/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dir"
+      ]
+    }
+  },
   "dependencies": {
-    "@vitejs/plugin-react": "^5.1.1",
-    "electron": "^39.2.6",
-    "vite": "^7.2.6",
     "react": "^19.2.3",
     "react-dom": "^19.2.3"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^39.2.6",
+    "electron-builder": "^26.0.12",
+    "vite": "^7.2.6"
+  }
 }
-

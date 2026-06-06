@@ -51,6 +51,20 @@ npm install
 npm run dev
 ```
 
+## 生成 Mac 应用
+
+```bash
+cd ~/Desktop/SoloOS/app
+npm run package:mac
+open ~/Desktop/SoloOS/app/release/mac-arm64/SoloOS.app
+```
+
+生成后的应用位置：
+
+```text
+~/Desktop/SoloOS/app/release/mac-arm64/SoloOS.app
+```
+
 ## GitHub 状态
 
 当前环境未检测到可用的 GitHub CLI `gh`，因此无法自动创建 GitHub 仓库或验证 push 权限。请安装并登录后执行：
@@ -61,4 +75,3 @@ gh auth login
 cd ~/Desktop/SoloOS
 gh repo create SoloOS --private --source=. --remote=origin --push
 ```
-

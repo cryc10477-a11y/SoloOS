@@ -3,25 +3,38 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const projectRoot = path.resolve(__dirname, '..', '..');
-const dataDir = path.join(projectRoot, 'data');
-const projectsPath = path.join(dataDir, 'projects.json');
-
 const statuses = ['想法池', '待立项', '验证中', '暂停', '放弃', '完成'];
 const priorities = ['低', '中', '高'];
 
+function getProjectRoot() {
+  if (process.env.SOLOOS_HOME) {
+    return process.env.SOLOOS_HOME;
+  }
+
+  if (app.isPackaged) {
+    return path.join(app.getPath('home'), 'Desktop', 'SoloOS');
+  }
+
+  return path.resolve(__dirname, '..', '..');
+}
+
+function getProjectsPath() {
+  return path.join(getProjectRoot(), 'data', 'projects.json');
+}
+
 async function ensureDataFile() {
+  const dataDir = path.dirname(getProjectsPath());
   await fs.mkdir(dataDir, { recursive: true });
   try {
-    await fs.access(projectsPath);
+    await fs.access(getProjectsPath());
   } catch {
-    await fs.writeFile(projectsPath, '[]\n', 'utf8');
+    await fs.writeFile(getProjectsPath(), '[]\n', 'utf8');
   }
 }
 
 async function readProjects() {
   await ensureDataFile();
-  const raw = await fs.readFile(projectsPath, 'utf8');
+  const raw = await fs.readFile(getProjectsPath(), 'utf8');
   if (!raw.trim()) {
     return [];
   }
@@ -30,7 +43,7 @@ async function readProjects() {
 
 async function writeProjects(projects) {
   await ensureDataFile();
-  await fs.writeFile(projectsPath, `${JSON.stringify(projects, null, 2)}\n`, 'utf8');
+  await fs.writeFile(getProjectsPath(), `${JSON.stringify(projects, null, 2)}\n`, 'utf8');
 }
 
 function timestamp() {
@@ -127,4 +140,3 @@ app.on('window-all-closed', () => {
     app.quit();
   }
 });
-
