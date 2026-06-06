@@ -4,7 +4,14 @@ const statuses = ['想法池', '待立项', '验证中', '执行中', '暂停', 
 const activeStatuses = ['待立项', '验证中', '执行中'];
 const priorities = ['低', '中', '高', '最高'];
 const taskStatuses = ['待办', '进行中', '已完成'];
-const aiSources = ['ChatGPT', 'WorkBuddy', 'Codex', 'Claude', '飞书CEO'];
+const aiSources = ['ChatGPT', 'Codex', 'WorkBuddy', 'Claude', 'Gemini', '飞书CEO'];
+const contextTargets = [
+  { id: 'chatgpt', label: 'ChatGPT', role: '战略讨论 / 个人背景 / 决策上下文' },
+  { id: 'codex', label: 'Codex', role: '源码路径 / 技术任务 / 文件结构 / 待修改内容' },
+  { id: 'workbuddy', label: 'WorkBuddy', role: '产品定位 / 用户需求 / 规划判断' },
+  { id: 'claude', label: 'Claude', role: '长文分析 / 风险推理 / 方案评审' },
+  { id: 'gemini', label: 'Gemini', role: '搜索研究 / 趋势判断 / 外部信息核对' }
+];
 
 const emptyProject = {
   name: '',
@@ -146,6 +153,146 @@ function normalizeProject(project) {
   };
 }
 
+function getRecentItems(items = [], count = 3) {
+  return [...items]
+    .sort((a, b) => new Date(b.createdAt ?? 0) - new Date(a.createdAt ?? 0))
+    .slice(0, count);
+}
+
+function getFirstLine(text) {
+  return String(text ?? '').split('\n').map((line) => line.trim()).filter(Boolean)[0] ?? '';
+}
+
+function classifyBackfill(text) {
+  const content = String(text ?? '').trim();
+  const checks = [
+    ['project_updates', '项目进展', /(进展|完成|已做|已经|更新|推进|上线|发布|修复|实现|交付)/i],
+    ['decisions', '决策记录', /(决定|决策|暂停|放弃|继续|立项|不做|选择|结论|结果)/i],
+    ['tasks', '新任务', /(下一步|任务|待办|行动|todo|需要做|执行|截止|deadline|计划)/i],
+    ['ai_suggestions', 'AI建议', /(建议|推荐|可以|应该|优先|最好|方案|策略|判断)/i],
+    ['risks', '风险提醒', /(风险|卡住|问题|阻塞|担心|审核|失败|过高|成本|不确定|依赖)/i]
+  ];
+  const categories = checks
+    .filter(([, , pattern]) => pattern.test(content))
+    .map(([id, label]) => ({ id, label }));
+
+  return categories.length > 0
+    ? categories
+    : [{ id: 'ai_suggestions', label: 'AI建议' }];
+}
+
+function formatProjectContext(project) {
+  const decisions = getRecentItems(project.decisions)
+    .map((item) => `  - ${formatDate(item.createdAt)}：${item.content}${item.reason ? `（原因：${item.reason}）` : ''}`)
+    .join('\n') || '  - 暂无';
+  const tasks = getRecentItems(project.tasks)
+    .map((item) => `  - [${item.status}] ${item.title}`)
+    .join('\n') || '  - 暂无';
+  const suggestions = getRecentItems(project.aiSuggestions)
+    .map((item) => `  - ${item.source}：${item.content}（${item.adopted ? '已采纳' : '未采纳'}）`)
+    .join('\n') || '  - 暂无';
+
+  return `## ${project.name || '未命名项目'}
+- 状态：${project.status}
+- 优先级：${project.priority}
+- 负责人：${project.owner || '未指定'}
+- 一句话描述：${project.description || '未填写'}
+- 当前目标：${project.currentGoal || '未填写'}
+- 下一步行动：${project.nextAction || '未填写'}
+- 截止时间：${project.nextActionDueDate || '未设置'}
+- 赚钱速度：${project.score?.moneySpeed ?? 50}
+- 成功概率：${project.score?.successProbability ?? 50}
+- 最后更新：${formatDateTime(project.updatedAt)}
+- 最近决策：
+${decisions}
+- 最近任务：
+${tasks}
+- 相关 AI 建议：
+${suggestions}`;
+}
+
+function buildContextPackage(targetId, projects, memory, rankedProjects, blockedDecisions) {
+  const target = contextTargets.find((item) => item.id === targetId) ?? contextTargets[0];
+  const activeProjects = rankedProjects.slice(0, 8);
+  const recentUpdates = [...projects]
+    .sort((a, b) => new Date(b.updatedAt ?? 0) - new Date(a.updatedAt ?? 0))
+    .slice(0, 6);
+  const latestHandoffs = getRecentItems(memory.aiHandoffLogs, 5)
+    .map((item) => `- ${formatDateTime(item.createdAt)}｜${item.source}｜${item.categories?.join('、') || '未分类'}：${getFirstLine(item.content)}`)
+    .join('\n') || '- 暂无';
+  const updateLines = getRecentItems(memory.projectUpdates, 8)
+    .map((item) => `- ${formatDateTime(item.createdAt)}｜${item.projectName || '未关联项目'}｜${item.category}：${getFirstLine(item.content)}`)
+    .join('\n') || '- 暂无';
+
+  const common = `# SoloOS AI Context Package
+
+目标工具：${target.label}
+用途：${target.role}
+生成时间：${new Date().toLocaleString('zh-CN')}
+
+## SoloOS 核心定位
+SoloOS 不是普通项目管理软件，而是所有 AI 工具的统一记忆中枢和唯一真相源。
+老板不再人工同步 ChatGPT / Codex / WorkBuddy / Claude / Gemini 的上下文；所有工具先从 SoloOS 导出上下文，结果再回填 SoloOS。
+
+## 本地统一记忆库路径
+- 项目根目录：${memory.paths?.root || '~/Desktop/SoloOS'}
+- owner.md：${memory.paths?.owner || 'docs/owner.md'}
+- projects：${memory.paths?.projects || 'data/projects.json'}
+- ai_handoff_logs：${memory.paths?.aiHandoffLogs || 'data/ai_handoff_logs.json'}
+- project_updates：${memory.paths?.projectUpdates || 'data/project_updates.json'}
+
+## Owner 背景
+${memory.owner || '暂无 owner.md 内容'}
+
+## 当前项目总览
+- 项目总数：${projects.length}
+- 活跃项目：${projects.filter((p) => activeStatuses.includes(p.status)).length}
+- 暂停项目：${projects.filter((p) => p.status === '暂停').length}
+- 完成项目：${projects.filter((p) => p.status === '完成').length}
+- 需要决策：${blockedDecisions.length}
+
+## 高优先级项目
+${activeProjects.map(formatProjectContext).join('\n\n') || '暂无活跃项目'}
+
+## 最近更新项目
+${recentUpdates.map((project) => `- ${project.name}｜${project.status}｜${formatDateTime(project.updatedAt)}｜下一步：${project.nextAction || '未填写'}`).join('\n') || '- 暂无'}
+
+## 最近 AI 交接日志
+${latestHandoffs}
+
+## 最近回填记录
+${updateLines}`;
+
+  const targetInstructions = {
+    codex: `## 给 Codex 的工作规则
+- 你正在处理本地桌面软件 SoloOS。
+- 当前项目路径：${memory.paths?.root || '/Users/shuaiwang/Desktop/SoloOS'}
+- 优先阅读：app/src/App.jsx、app/src/styles.css、app/main/main.cjs、data/projects.json、docs/owner.md。
+- 不要把 SoloOS 做成普通项目管理软件；核心是统一 AI 记忆中枢。
+- 修改后必须运行测试、构建、打包、git status、git add、git commit、git push；push 失败必须说明原因。
+- 技术任务优先级：本地记忆库、上下文导出、AI回填归类、项目状态更新。`,
+    workbuddy: `## 给 WorkBuddy 的工作重点
+- 请从产品经理和业务合伙人视角判断 SoloOS 是否能减少老板同步成本。
+- 重点检查：定位是否清晰、信息架构是否围绕“统一记忆中枢”、回填分类是否够实用。
+- 不要优先做 UI 美化、群聊、会议室或复杂 Agent 自动化。
+- 输出要能被复制回 SoloOS，并标明：项目进展 / 决策记录 / 新任务 / AI建议 / 风险提醒。`,
+    chatgpt: `## 给 ChatGPT 的讨论重点
+- 请基于 Owner 背景、当前项目状态和最新决策，帮助老板做战略判断。
+- 重点回答：今天最该做什么、哪个项目应该继续/暂停、下一步最小行动是什么。
+- 输出请结构化，方便回填到 SoloOS：结论、原因、下一步、风险、需要记录的决策。`,
+    claude: `## 给 Claude 的分析重点
+- 请做深度审阅：信息是否自洽、决策是否有盲点、风险是否被低估。
+- 优先输出长逻辑链分析、反例、潜在失败原因和更稳的下一步。
+- 输出请拆成：判断 / 证据 / 风险 / 建议 / 可回填记录。`,
+    gemini: `## 给 Gemini 的研究重点
+- 请补充外部信息、趋势、竞品和市场信号。
+- 重点验证项目是否有需求、赚钱速度是否真实、风险是否来自平台规则或市场变化。
+- 输出请标注信息来源方向，并拆成：市场发现 / 风险 / 建议 / 下一步验证。`
+  };
+
+  return `${common}\n\n${targetInstructions[target.id]}`;
+}
+
 /* ───────── App ───────── */
 
 export default function App() {
@@ -159,6 +306,10 @@ export default function App() {
     aiSuggestion: '', aiSource: 'Codex'
   });
   const [todayTasks, setTodayTasks] = useState([]);
+  const [memory, setMemory] = useState({ owner: '', aiHandoffLogs: [], projectUpdates: [], paths: {} });
+  const [contextTarget, setContextTarget] = useState('codex');
+  const [backfill, setBackfill] = useState({ source: 'ChatGPT', projectId: '', content: '' });
+  const [contextCopied, setContextCopied] = useState(false);
 
   const selectedProject = useMemo(
     () => projects.find((p) => p.id === selectedId),
@@ -211,7 +362,10 @@ export default function App() {
 
   /* ── lifecycle ── */
 
-  useEffect(() => { loadProjects(); }, []);
+  useEffect(() => {
+    loadProjects();
+    loadMemory();
+  }, []);
 
   useEffect(() => {
     setForm(selectedProject ? normalizeProject(selectedProject) : emptyProject);
@@ -220,6 +374,16 @@ export default function App() {
   async function loadProjects() {
     const next = (await window.soloOS.listProjects()).map(normalizeProject);
     setProjects(next);
+  }
+
+  async function loadMemory() {
+    const next = await window.soloOS.getMemory();
+    setMemory({
+      owner: next.owner ?? '',
+      aiHandoffLogs: next.aiHandoffLogs ?? [],
+      projectUpdates: next.projectUpdates ?? [],
+      paths: next.paths ?? {}
+    });
   }
 
   function selectProject(projectId) {
@@ -321,6 +485,92 @@ export default function App() {
     }));
   }
 
+  async function copyContextPackage() {
+    const text = buildContextPackage(contextTarget, projects, memory, rankedProjects, blockedDecisions);
+    await navigator.clipboard.writeText(text);
+    setContextCopied(true);
+    setTimeout(() => setContextCopied(false), 1600);
+  }
+
+  async function applyBackfill() {
+    const content = backfill.content.trim();
+    if (!content) {
+      setMessage('请先粘贴 AI 输出内容');
+      return;
+    }
+
+    const categories = classifyBackfill(content);
+    const project = projects.find((item) => item.id === backfill.projectId);
+    const categoryLabels = categories.map((item) => item.label);
+
+    await window.soloOS.appendMemoryRecord('aiHandoffLogs', {
+      source: backfill.source,
+      projectId: project?.id ?? '',
+      projectName: project?.name ?? '',
+      categories: categoryLabels,
+      content
+    });
+
+    for (const category of categories) {
+      await window.soloOS.appendMemoryRecord('projectUpdates', {
+        source: backfill.source,
+        projectId: project?.id ?? '',
+        projectName: project?.name ?? '未关联项目',
+        category: category.label,
+        content
+      });
+    }
+
+    if (project) {
+      let nextProject = normalizeProject(project);
+      const summary = getFirstLine(content) || content;
+      if (categories.some((item) => item.id === 'project_updates')) {
+        nextProject = withTimeline(nextProject, '项目进展', `${backfill.source}：${summary}`);
+        nextProject.discussions = [
+          createItem({ author: backfill.source, content: `项目进展：${content}` }),
+          ...nextProject.discussions
+        ];
+      }
+      if (categories.some((item) => item.id === 'decisions')) {
+        nextProject.decisions = [
+          createItem({ content: summary, reason: `${backfill.source} 回填`, result: '待跟进' }),
+          ...nextProject.decisions
+        ];
+        nextProject = withTimeline(nextProject, '新增决策', summary);
+      }
+      if (categories.some((item) => item.id === 'tasks')) {
+        nextProject.tasks = [
+          createItem({ title: summary, status: '待办' }),
+          ...nextProject.tasks
+        ];
+        nextProject.nextAction = nextProject.nextAction || summary;
+        nextProject = withTimeline(nextProject, '新增任务', summary);
+      }
+      if (categories.some((item) => item.id === 'ai_suggestions')) {
+        nextProject.aiSuggestions = [
+          createItem({ source: backfill.source, content, adopted: false }),
+          ...nextProject.aiSuggestions
+        ];
+        nextProject = withTimeline(nextProject, '新增AI建议', `${backfill.source}：${summary}`);
+      }
+      if (categories.some((item) => item.id === 'risks')) {
+        nextProject.discussions = [
+          createItem({ author: backfill.source, content: `风险提醒：${content}` }),
+          ...nextProject.discussions
+        ];
+        nextProject = withTimeline(nextProject, '风险提醒', summary);
+      }
+
+      const updated = await window.soloOS.updateProject(project.id, nextProject);
+      setProjects((current) => current.map((item) => item.id === updated.id ? normalizeProject(updated) : item));
+      setSelectedId(updated.id);
+    }
+
+    await loadMemory();
+    setBackfill((current) => ({ ...current, content: '' }));
+    setMessage(`已回填：${categoryLabels.join('、')}`);
+  }
+
   /* ── render ── */
 
   return (
@@ -352,6 +602,21 @@ export default function App() {
           <AIAdviceCenter
             projects={projects}
             selectProject={selectProject}
+          />
+        )}
+        {view === 'context' && (
+          <AIContextHub
+            projects={projects}
+            rankedProjects={rankedProjects}
+            blockedDecisions={blockedDecisions}
+            memory={memory}
+            contextTarget={contextTarget}
+            setContextTarget={setContextTarget}
+            contextCopied={contextCopied}
+            copyContextPackage={copyContextPackage}
+            backfill={backfill}
+            setBackfill={setBackfill}
+            applyBackfill={applyBackfill}
           />
         )}
         {view === 'project' && (
@@ -399,13 +664,13 @@ function Sidebar({ view, setView, createProject, rankedProjects, selectedId, sel
         <span className="logo">S</span>
         <div>
           <h1>SoloOS</h1>
-          <p>一人公司操作系统</p>
+          <p>AI 统一记忆中枢</p>
         </div>
       </div>
 
       <nav className="nav">
         <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>
-          <span className="nav-icon">🏠</span> 驾驶舱
+          <span className="nav-icon">🏠</span> 记忆驾驶舱
         </button>
         <button className={view === 'today' ? 'active' : ''} onClick={() => setView('today')}>
           <span className="nav-icon">📋</span> 今日工作台
@@ -415,6 +680,9 @@ function Sidebar({ view, setView, createProject, rankedProjects, selectedId, sel
         </button>
         <button className={view === 'advice' ? 'active' : ''} onClick={() => setView('advice')}>
           <span className="nav-icon">🧠</span> AI 建议中心
+        </button>
+        <button className={view === 'context' ? 'active' : ''} onClick={() => setView('context')}>
+          <span className="nav-icon">🧬</span> AI Context Hub
         </button>
       </nav>
 
@@ -467,8 +735,8 @@ function Dashboard({
     <>
       <header className="topbar">
         <div>
-          <p className="eyebrow">BOSS DASHBOARD</p>
-          <h2>{dateStr}</h2>
+          <p className="eyebrow">MEMORY DASHBOARD</p>
+          <h2>SoloOS 统一记忆中枢 · {dateStr}</h2>
         </div>
         <div className="topbar-stats">
           <span className="topstat">{stats.active} 活跃</span>
@@ -835,6 +1103,158 @@ function TodayWorkbench({ rankedProjects, blockedDecisions, selectProject, today
                 </div>
               ))}
           </div>
+        </article>
+      </section>
+    </>
+  );
+}
+
+/* ────────── AI Context Hub ────────── */
+
+function AIContextHub({
+  projects, rankedProjects, blockedDecisions, memory,
+  contextTarget, setContextTarget, contextCopied, copyContextPackage,
+  backfill, setBackfill, applyBackfill
+}) {
+  const contextText = buildContextPackage(contextTarget, projects, memory, rankedProjects, blockedDecisions);
+  const classifications = classifyBackfill(backfill.content);
+  const recentHandoffs = getRecentItems(memory.aiHandoffLogs, 6);
+  const recentUpdates = getRecentItems(memory.projectUpdates, 6);
+
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">AI CONTEXT HUB</p>
+          <h2>统一记忆中枢</h2>
+        </div>
+        <div className="topbar-stats">
+          <span className="topstat">{projects.length} 项目</span>
+          <span className="topstat ok">{recentHandoffs.length} 交接</span>
+          <span className="topstat warn">本地唯一真相源</span>
+        </div>
+      </header>
+
+      <section className="context-grid">
+        <article className="dash-card context-hero">
+          <div className="card-header">
+            <h3>SoloOS 新核心方向</h3>
+            <span className="card-badge">Memory OS</span>
+          </div>
+          <p>
+            SoloOS 负责保存 Owner 背景、项目状态、决策、任务、AI 交接日志和项目更新。
+            以后所有 AI 工具先从这里导出上下文，产出的建议再回填到这里。
+          </p>
+          <div className="memory-map">
+            <span>owner.md</span>
+            <span>projects</span>
+            <span>decisions</span>
+            <span>tasks</span>
+            <span>ai_handoff_logs</span>
+            <span>project_updates</span>
+          </div>
+        </article>
+
+        <article className="dash-card context-export">
+          <div className="card-header">
+            <h3>导出给 AI 工具</h3>
+            <button className="primary small" onClick={copyContextPackage}>
+              {contextCopied ? '已复制' : '复制上下文包'}
+            </button>
+          </div>
+          <div className="target-grid">
+            {contextTargets.map((target) => (
+              <button
+                key={target.id}
+                className={`target-card ${contextTarget === target.id ? 'active' : ''}`}
+                onClick={() => setContextTarget(target.id)}
+              >
+                <strong>{target.label}</strong>
+                <small>{target.role}</small>
+              </button>
+            ))}
+          </div>
+          <textarea
+            className="context-output"
+            readOnly
+            value={contextText}
+          />
+        </article>
+
+        <article className="dash-card context-backfill">
+          <div className="card-header">
+            <h3>AI 结果回填</h3>
+            <span className="card-badge">归类保存</span>
+          </div>
+          <div className="backfill-form">
+            <label>
+              来源
+              <select
+                value={backfill.source}
+                onChange={(event) => setBackfill((current) => ({ ...current, source: event.target.value }))}
+              >
+                {aiSources.map((source) => <option key={source}>{source}</option>)}
+              </select>
+            </label>
+            <label>
+              关联项目
+              <select
+                value={backfill.projectId}
+                onChange={(event) => setBackfill((current) => ({ ...current, projectId: event.target.value }))}
+              >
+                <option value="">不关联项目</option>
+                {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+              </select>
+            </label>
+            <label className="wide">
+              粘贴 AI 输出
+              <textarea
+                className="backfill-textarea"
+                value={backfill.content}
+                onChange={(event) => setBackfill((current) => ({ ...current, content: event.target.value }))}
+                placeholder="把 ChatGPT / Codex / WorkBuddy / Claude / Gemini 的输出粘贴到这里，SoloOS 会归类保存。"
+              />
+            </label>
+            <div className="classification-preview wide">
+              <span>识别为</span>
+              {classifications.map((item) => <strong key={item.id}>{item.label}</strong>)}
+            </div>
+            <button className="primary wide" onClick={applyBackfill}>回填到 SoloOS</button>
+          </div>
+        </article>
+
+        <article className="dash-card context-log">
+          <div className="card-header">
+            <h3>最近 AI 交接</h3>
+          </div>
+          {recentHandoffs.length === 0 ? (
+            <p className="muted">暂无 AI 交接日志</p>
+          ) : (
+            recentHandoffs.map((item) => (
+              <div key={item.id} className="memory-row">
+                <strong>{item.source} · {item.projectName || '未关联项目'}</strong>
+                <small>{formatDateTime(item.createdAt)} · {item.categories?.join('、') || '未分类'}</small>
+                <p>{getFirstLine(item.content)}</p>
+              </div>
+            ))
+          )}
+        </article>
+
+        <article className="dash-card context-log">
+          <div className="card-header">
+            <h3>最近回填记录</h3>
+          </div>
+          {recentUpdates.length === 0 ? (
+            <p className="muted">暂无项目更新</p>
+          ) : (
+            recentUpdates.map((item) => (
+              <div key={item.id} className="memory-row">
+                <strong>{item.category} · {item.projectName || '未关联项目'}</strong>
+                <small>{formatDateTime(item.createdAt)} · {item.source}</small>
+                <p>{getFirstLine(item.content)}</p>
+              </div>
+            ))
+          )}
         </article>
       </section>
     </>

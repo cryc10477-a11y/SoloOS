@@ -1,5 +1,13 @@
 # CHANGELOG
 
+## 0.4.1 - 2026-06-06
+
+- 重新定义 SoloOS v0.4 核心方向：从普通项目管理升级为所有 AI 工具的统一记忆中枢。
+- 新增 AI Context Hub 页面，可按 ChatGPT、Codex、WorkBuddy、Claude、Gemini 生成不同侧重点的上下文包。
+- 新增 AI 结果回填入口，粘贴 AI 输出后自动归类为项目进展、决策记录、新任务、AI 建议和风险提醒。
+- 新增本地记忆数据文件：`data/ai_handoff_logs.json` 和 `data/project_updates.json`。
+- Electron 本地层新增记忆读取与追加接口，统一读取 `docs/owner.md`、项目库、AI 交接日志和项目更新。
+
 ## 0.4.0 - 2026-06-06
 
 - 老板驾驶舱升级为自动行动中心：今日最重要任务、下一步行动、需要决策、风险提醒、最近更新全部由项目数据自动计算。

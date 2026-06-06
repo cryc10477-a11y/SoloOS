@@ -31,6 +31,14 @@ function getProjectsPath() {
   return path.join(getProjectRoot(), 'data', 'projects.json');
 }
 
+function getDataPath(filename) {
+  return path.join(getProjectRoot(), 'data', filename);
+}
+
+function getDocPath(filename) {
+  return path.join(getProjectRoot(), 'docs', filename);
+}
+
 async function ensureDataFile() {
   const dataDir = path.dirname(getProjectsPath());
   await fs.mkdir(dataDir, { recursive: true });
@@ -38,6 +46,15 @@ async function ensureDataFile() {
     await fs.access(getProjectsPath());
   } catch {
     await fs.writeFile(getProjectsPath(), '[]\n', 'utf8');
+  }
+}
+
+async function ensureJsonArrayFile(filePath) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await fs.access(filePath);
+  } catch {
+    await fs.writeFile(filePath, '[]\n', 'utf8');
   }
 }
 
@@ -53,6 +70,30 @@ async function readProjects() {
 async function writeProjects(projects) {
   await ensureDataFile();
   await fs.writeFile(getProjectsPath(), `${JSON.stringify(projects, null, 2)}\n`, 'utf8');
+}
+
+async function readJsonArray(filename) {
+  const filePath = getDataPath(filename);
+  await ensureJsonArrayFile(filePath);
+  const raw = await fs.readFile(filePath, 'utf8');
+  if (!raw.trim()) {
+    return [];
+  }
+  return JSON.parse(raw);
+}
+
+async function writeJsonArray(filename, items) {
+  const filePath = getDataPath(filename);
+  await ensureJsonArrayFile(filePath);
+  await fs.writeFile(filePath, `${JSON.stringify(items, null, 2)}\n`, 'utf8');
+}
+
+async function readTextFile(filePath, fallback = '') {
+  try {
+    return await fs.readFile(filePath, 'utf8');
+  } catch {
+    return fallback;
+  }
 }
 
 function timestamp() {
@@ -201,6 +242,47 @@ app.whenReady().then(() => {
     const nextProjects = projects.filter((project) => project.id !== id);
     await writeProjects(nextProjects);
     return { ok: true };
+  });
+
+  ipcMain.handle('memory:get', async () => {
+    const [owner, aiHandoffLogs, projectUpdates] = await Promise.all([
+      readTextFile(getDocPath('owner.md'), '# Owner\n\n暂无 owner.md 内容。\n'),
+      readJsonArray('ai_handoff_logs.json'),
+      readJsonArray('project_updates.json')
+    ]);
+
+    return {
+      owner,
+      aiHandoffLogs,
+      projectUpdates,
+      paths: {
+        root: getProjectRoot(),
+        owner: getDocPath('owner.md'),
+        projects: getProjectsPath(),
+        aiHandoffLogs: getDataPath('ai_handoff_logs.json'),
+        projectUpdates: getDataPath('project_updates.json')
+      }
+    };
+  });
+
+  ipcMain.handle('memory:append', async (_event, collection, input) => {
+    const filenames = {
+      aiHandoffLogs: 'ai_handoff_logs.json',
+      projectUpdates: 'project_updates.json'
+    };
+    const filename = filenames[collection];
+    if (!filename) {
+      throw new Error('未知记忆集合');
+    }
+    const items = await readJsonArray(filename);
+    const record = {
+      id: input.id ?? crypto.randomUUID(),
+      createdAt: input.createdAt ?? timestamp(),
+      ...input
+    };
+    items.unshift(record);
+    await writeJsonArray(filename, items);
+    return record;
   });
 
   createWindow();
