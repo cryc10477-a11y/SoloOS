@@ -3,8 +3,17 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const statuses = ['想法池', '待立项', '验证中', '暂停', '放弃', '完成'];
-const priorities = ['低', '中', '高'];
+const statuses = ['想法池', '待立项', '验证中', '执行中', '暂停', '完成', '放弃'];
+const priorities = ['低', '中', '高', '最高'];
+const taskStatuses = ['待办', '进行中', '已完成'];
+
+const defaultScore = {
+  moneySpeed: 50,
+  successProbability: 50,
+  costEfficiency: 50,
+  interest: 50,
+  longTermValue: 50
+};
 
 function getProjectRoot() {
   if (process.env.SOLOOS_HOME) {
@@ -50,22 +59,85 @@ function timestamp() {
   return new Date().toISOString();
 }
 
-function normalizeProject(input, existing = {}) {
+function normalizeScore(input = {}, existing = {}) {
+  return Object.fromEntries(
+    Object.entries(defaultScore).map(([key, defaultValue]) => {
+      const raw = input[key] ?? existing[key] ?? defaultValue;
+      const value = Number(raw);
+      return [key, Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : defaultValue];
+    })
+  );
+}
+
+function normalizeArrayItems(items = []) {
+  return items.map((item) => ({
+    id: item.id ?? crypto.randomUUID(),
+    createdAt: item.createdAt ?? timestamp(),
+    ...item
+  }));
+}
+
+function normalizeTasks(items = []) {
+  return normalizeArrayItems(items).map((task) => ({
+    ...task,
+    title: String(task.title ?? task.content ?? '').trim(),
+    status: taskStatuses.includes(task.status) ? task.status : task.done ? '已完成' : '待办'
+  }));
+}
+
+function normalizeAiSuggestions(items = []) {
+  return normalizeArrayItems(items).map((suggestion) => ({
+    ...suggestion,
+    source: String(suggestion.source ?? 'Codex').trim(),
+    content: String(suggestion.content ?? '').trim(),
+    adopted: Boolean(suggestion.adopted)
+  }));
+}
+
+function normalizeTimeline(items = [], projectName, existing = {}) {
+  const timeline = normalizeArrayItems(items);
+  if (timeline.length > 0 || existing.id) {
+    return timeline;
+  }
+  return [{
+    id: crypto.randomUUID(),
+    event: '创建项目',
+    content: projectName || '未命名项目',
+    createdAt: timestamp()
+  }];
+}
+
+function normalizeProject(input = {}, existing = {}) {
   const now = timestamp();
+  const name = String(input.name ?? existing.name ?? '').trim();
+  const status = statuses.includes(input.status)
+    ? input.status
+    : statuses.includes(existing.status)
+      ? existing.status
+      : '想法池';
+  const priority = priorities.includes(input.priority)
+    ? input.priority
+    : priorities.includes(existing.priority)
+      ? existing.priority
+      : '中';
   return {
-    id: existing.id ?? crypto.randomUUID(),
-    name: String(input.name ?? existing.name ?? '').trim(),
+    id: existing.id ?? input.id ?? crypto.randomUUID(),
+    name,
     description: String(input.description ?? existing.description ?? '').trim(),
-    status: statuses.includes(input.status) ? input.status : existing.status ?? '想法池',
-    priority: priorities.includes(input.priority) ? input.priority : existing.priority ?? '中',
+    status,
+    priority,
+    currentGoal: String(input.currentGoal ?? existing.currentGoal ?? '').trim(),
     nextAction: String(input.nextAction ?? existing.nextAction ?? '').trim(),
+    nextActionDueDate: String(input.nextActionDueDate ?? existing.nextActionDueDate ?? '').trim(),
     owner: String(input.owner ?? existing.owner ?? '').trim(),
-    createdAt: existing.createdAt ?? now,
-    updatedAt: now,
-    decisions: Array.isArray(input.decisions) ? input.decisions : existing.decisions ?? [],
-    tasks: Array.isArray(input.tasks) ? input.tasks : existing.tasks ?? [],
-    discussions: Array.isArray(input.discussions) ? input.discussions : existing.discussions ?? [],
-    aiSuggestions: Array.isArray(input.aiSuggestions) ? input.aiSuggestions : existing.aiSuggestions ?? []
+    createdAt: existing.createdAt ?? input.createdAt ?? now,
+    updatedAt: existing.id ? now : input.updatedAt ?? now,
+    score: normalizeScore(input.score, existing.score),
+    decisions: normalizeArrayItems(Array.isArray(input.decisions) ? input.decisions : existing.decisions ?? []),
+    tasks: normalizeTasks(Array.isArray(input.tasks) ? input.tasks : existing.tasks ?? []),
+    discussions: normalizeArrayItems(Array.isArray(input.discussions) ? input.discussions : existing.discussions ?? []),
+    aiSuggestions: normalizeAiSuggestions(Array.isArray(input.aiSuggestions) ? input.aiSuggestions : existing.aiSuggestions ?? []),
+    timeline: normalizeTimeline(Array.isArray(input.timeline) ? input.timeline : existing.timeline ?? [], name, existing)
   };
 }
 
@@ -91,7 +163,12 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  ipcMain.handle('projects:list', async () => readProjects());
+  ipcMain.handle('projects:list', async () => {
+    const projects = await readProjects();
+    const normalizedProjects = projects.map((project) => normalizeProject(project));
+    await writeProjects(normalizedProjects);
+    return normalizedProjects;
+  });
 
   ipcMain.handle('projects:create', async (_event, input) => {
     const projects = await readProjects();
