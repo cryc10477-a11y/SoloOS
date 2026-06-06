@@ -1,0 +1,12 @@
+.DS_Store
+node_modules/
+dist/
+out/
+*.log
+logs/*.log
+app/node_modules/
+app/dist/
+app/out/
+app/.npm-cache/
+data/*.sqlite
+data/*.sqlite3
