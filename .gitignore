@@ -11,3 +11,4 @@ app/release/
 app/.npm-cache/
 data/*.sqlite
 data/*.sqlite3
+data/local/

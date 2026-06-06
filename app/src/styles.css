@@ -897,7 +897,7 @@ button:disabled { cursor: default; opacity: 0.5; }
 }
 
 .memory-map span,
-.classification-preview strong {
+.category-chip {
   padding: 6px 10px;
   border-radius: 999px;
   color: var(--accent);
@@ -983,6 +983,25 @@ button:disabled { cursor: default; opacity: 0.5; }
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.classification-preview small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.category-chip {
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border-color: var(--border);
+  transition: all 0.15s ease;
+}
+
+.category-chip:hover,
+.category-chip.active {
+  color: var(--accent);
+  background: rgba(110, 231, 183, 0.08);
+  border-color: rgba(110, 231, 183, 0.25);
 }
 
 .memory-row {

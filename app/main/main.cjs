@@ -28,11 +28,19 @@ function getProjectRoot() {
 }
 
 function getProjectsPath() {
-  return path.join(getProjectRoot(), 'data', 'projects.json');
+  return getDataPath('projects.json');
 }
 
 function getDataPath(filename) {
+  return path.join(getRuntimeDataDir(), filename);
+}
+
+function getLegacyDataPath(filename) {
   return path.join(getProjectRoot(), 'data', filename);
+}
+
+function getRuntimeDataDir() {
+  return path.join(getProjectRoot(), 'data', 'local');
 }
 
 function getDocPath(filename) {
@@ -45,7 +53,9 @@ async function ensureDataFile() {
   try {
     await fs.access(getProjectsPath());
   } catch {
-    await fs.writeFile(getProjectsPath(), '[]\n', 'utf8');
+    const legacyProjectsPath = getLegacyDataPath('projects.json');
+    const legacyProjects = await readTextFile(legacyProjectsPath, '').catch(() => '');
+    await fs.writeFile(getProjectsPath(), legacyProjects.trim() ? legacyProjects : '[]\n', 'utf8');
   }
 }
 
@@ -74,7 +84,15 @@ async function writeProjects(projects) {
 
 async function readJsonArray(filename) {
   const filePath = getDataPath(filename);
-  await ensureJsonArrayFile(filePath);
+  try {
+    await fs.access(filePath);
+  } catch {
+    const legacy = await readTextFile(getLegacyDataPath(filename), '');
+    await ensureJsonArrayFile(filePath);
+    if (legacy.trim()) {
+      await fs.writeFile(filePath, legacy, 'utf8');
+    }
+  }
   const raw = await fs.readFile(filePath, 'utf8');
   if (!raw.trim()) {
     return [];
@@ -260,7 +278,8 @@ app.whenReady().then(() => {
         owner: getDocPath('owner.md'),
         projects: getProjectsPath(),
         aiHandoffLogs: getDataPath('ai_handoff_logs.json'),
-        projectUpdates: getDataPath('project_updates.json')
+        projectUpdates: getDataPath('project_updates.json'),
+        runtimeDataDir: getRuntimeDataDir()
       }
     };
   });

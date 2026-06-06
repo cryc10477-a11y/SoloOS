@@ -12,6 +12,13 @@ const contextTargets = [
   { id: 'claude', label: 'Claude', role: '长文分析 / 风险推理 / 方案评审' },
   { id: 'gemini', label: 'Gemini', role: '搜索研究 / 趋势判断 / 外部信息核对' }
 ];
+const backfillCategoryOptions = [
+  { id: 'project_updates', label: '项目进展', pattern: /(进展|完成|已做|已经|更新|推进|上线|发布|修复|实现|交付)/i },
+  { id: 'decisions', label: '决策记录', pattern: /(决定|决策|暂停|放弃|继续|立项|不做|选择|结论|结果)/i },
+  { id: 'tasks', label: '新任务', pattern: /(下一步|任务|待办|行动|todo|需要做|执行|截止|deadline|计划)/i },
+  { id: 'ai_suggestions', label: 'AI建议', pattern: /(建议|推荐|可以|应该|优先|最好|方案|策略|判断)/i },
+  { id: 'risks', label: '风险提醒', pattern: /(风险|卡住|问题|阻塞|担心|审核|失败|过高|成本|不确定|依赖)/i }
+];
 
 const emptyProject = {
   name: '',
@@ -165,20 +172,21 @@ function getFirstLine(text) {
 
 function classifyBackfill(text) {
   const content = String(text ?? '').trim();
-  const checks = [
-    ['project_updates', '项目进展', /(进展|完成|已做|已经|更新|推进|上线|发布|修复|实现|交付)/i],
-    ['decisions', '决策记录', /(决定|决策|暂停|放弃|继续|立项|不做|选择|结论|结果)/i],
-    ['tasks', '新任务', /(下一步|任务|待办|行动|todo|需要做|执行|截止|deadline|计划)/i],
-    ['ai_suggestions', 'AI建议', /(建议|推荐|可以|应该|优先|最好|方案|策略|判断)/i],
-    ['risks', '风险提醒', /(风险|卡住|问题|阻塞|担心|审核|失败|过高|成本|不确定|依赖)/i]
-  ];
-  const categories = checks
-    .filter(([, , pattern]) => pattern.test(content))
-    .map(([id, label]) => ({ id, label }));
+  if (!content) return [];
+  const categories = backfillCategoryOptions
+    .filter((option) => option.pattern.test(content))
+    .map(({ id, label }) => ({ id, label }));
 
   return categories.length > 0
     ? categories
     : [{ id: 'ai_suggestions', label: 'AI建议' }];
+}
+
+function getBackfillCategories(ids = []) {
+  return ids
+    .map((id) => backfillCategoryOptions.find((option) => option.id === id))
+    .filter(Boolean)
+    .map(({ id, label }) => ({ id, label }));
 }
 
 function formatProjectContext(project) {
@@ -298,7 +306,7 @@ ${updateLines}`;
 export default function App() {
   const [projects, setProjects] = useState([]);
   const [selectedId, setSelectedId] = useState('');
-  const [view, setView] = useState('dashboard');
+  const [view, setView] = useState('context');
   const [form, setForm] = useState(emptyProject);
   const [message, setMessage] = useState('');
   const [drafts, setDrafts] = useState({
@@ -308,7 +316,7 @@ export default function App() {
   const [todayTasks, setTodayTasks] = useState([]);
   const [memory, setMemory] = useState({ owner: '', aiHandoffLogs: [], projectUpdates: [], paths: {} });
   const [contextTarget, setContextTarget] = useState('codex');
-  const [backfill, setBackfill] = useState({ source: 'ChatGPT', projectId: '', content: '' });
+  const [backfill, setBackfill] = useState({ source: 'ChatGPT', projectId: '', content: '', categories: [] });
   const [contextCopied, setContextCopied] = useState(false);
 
   const selectedProject = useMemo(
@@ -488,6 +496,14 @@ export default function App() {
   async function copyContextPackage() {
     const text = buildContextPackage(contextTarget, projects, memory, rankedProjects, blockedDecisions);
     await navigator.clipboard.writeText(text);
+    await window.soloOS.appendMemoryRecord('aiHandoffLogs', {
+      source: `SoloOS → ${contextTargets.find((target) => target.id === contextTarget)?.label ?? 'AI'}`,
+      projectId: '',
+      projectName: '',
+      categories: ['上下文导出'],
+      content: text
+    });
+    await loadMemory();
     setContextCopied(true);
     setTimeout(() => setContextCopied(false), 1600);
   }
@@ -499,7 +515,13 @@ export default function App() {
       return;
     }
 
-    const categories = classifyBackfill(content);
+    const categories = backfill.categories.length > 0
+      ? getBackfillCategories(backfill.categories)
+      : classifyBackfill(content);
+    if (categories.length === 0) {
+      setMessage('请至少选择一个回填分类');
+      return;
+    }
     const project = projects.find((item) => item.id === backfill.projectId);
     const categoryLabels = categories.map((item) => item.label);
 
@@ -567,7 +589,7 @@ export default function App() {
     }
 
     await loadMemory();
-    setBackfill((current) => ({ ...current, content: '' }));
+    setBackfill((current) => ({ ...current, content: '', categories: [] }));
     setMessage(`已回填：${categoryLabels.join('、')}`);
   }
 
@@ -669,6 +691,9 @@ function Sidebar({ view, setView, createProject, rankedProjects, selectedId, sel
       </div>
 
       <nav className="nav">
+        <button className={view === 'context' ? 'active' : ''} onClick={() => setView('context')}>
+          <span className="nav-icon">🧬</span> AI Context Hub
+        </button>
         <button className={view === 'dashboard' ? 'active' : ''} onClick={() => setView('dashboard')}>
           <span className="nav-icon">🏠</span> 记忆驾驶舱
         </button>
@@ -680,9 +705,6 @@ function Sidebar({ view, setView, createProject, rankedProjects, selectedId, sel
         </button>
         <button className={view === 'advice' ? 'active' : ''} onClick={() => setView('advice')}>
           <span className="nav-icon">🧠</span> AI 建议中心
-        </button>
-        <button className={view === 'context' ? 'active' : ''} onClick={() => setView('context')}>
-          <span className="nav-icon">🧬</span> AI Context Hub
         </button>
       </nav>
 
@@ -1117,7 +1139,11 @@ function AIContextHub({
   backfill, setBackfill, applyBackfill
 }) {
   const contextText = buildContextPackage(contextTarget, projects, memory, rankedProjects, blockedDecisions);
-  const classifications = classifyBackfill(backfill.content);
+  const suggestedCategories = classifyBackfill(backfill.content);
+  const selectedCategoryIds = backfill.categories.length > 0
+    ? backfill.categories
+    : suggestedCategories.map((item) => item.id);
+  const classifications = getBackfillCategories(selectedCategoryIds);
   const recentHandoffs = getRecentItems(memory.aiHandoffLogs, 6);
   const recentUpdates = getRecentItems(memory.projectUpdates, 6);
 
@@ -1211,13 +1237,35 @@ function AIContextHub({
               <textarea
                 className="backfill-textarea"
                 value={backfill.content}
-                onChange={(event) => setBackfill((current) => ({ ...current, content: event.target.value }))}
+                onChange={(event) => {
+                  const content = event.target.value;
+                  setBackfill((current) => ({
+                    ...current,
+                    content,
+                    categories: classifyBackfill(content).map((item) => item.id)
+                  }));
+                }}
                 placeholder="把 ChatGPT / Codex / WorkBuddy / Claude / Gemini 的输出粘贴到这里，SoloOS 会归类保存。"
               />
             </label>
             <div className="classification-preview wide">
-              <span>识别为</span>
-              {classifications.map((item) => <strong key={item.id}>{item.label}</strong>)}
+              <span>回填分类</span>
+              {backfillCategoryOptions.map((option) => (
+                <button
+                  key={option.id}
+                  className={`category-chip ${selectedCategoryIds.includes(option.id) ? 'active' : ''}`}
+                  onClick={() => setBackfill((current) => {
+                    const exists = selectedCategoryIds.includes(option.id);
+                    const categories = exists
+                      ? selectedCategoryIds.filter((id) => id !== option.id)
+                      : [...selectedCategoryIds, option.id];
+                    return { ...current, categories };
+                  })}
+                >
+                  {option.label}
+                </button>
+              ))}
+              {classifications.length === 0 && <small>粘贴内容后自动预判，也可以手动选择</small>}
             </div>
             <button className="primary wide" onClick={applyBackfill}>回填到 SoloOS</button>
           </div>

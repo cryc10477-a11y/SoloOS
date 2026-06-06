@@ -2,11 +2,11 @@
 
 ## 当前存储策略
 
-当前使用本地 JSON 文件作为唯一真相源，字段设计对齐未来 SQLite 迁移。
+当前使用本地 JSON 文件作为唯一真相源，字段设计对齐未来 SQLite 迁移。真实运行数据写入 `data/local/`，该目录被 Git 忽略；仓库只保留 `data/*.example.json` 示例结构。
 
-- `data/projects.json`：项目库、任务、决策、讨论、AI 建议、时间轴。
-- `data/ai_handoff_logs.json`：每次 AI 上下文交接和回填原文。
-- `data/project_updates.json`：从 AI 输出中归类出的项目进展、决策、新任务、AI 建议、风险提醒。
+- `data/local/projects.json`：项目库、任务、决策、讨论、AI 建议、时间轴。
+- `data/local/ai_handoff_logs.json`：每次 AI 上下文交接和回填原文。
+- `data/local/project_updates.json`：从 AI 输出中归类出的项目进展、决策、新任务、AI 建议、风险提醒。
 - `docs/owner.md`：Owner 背景和长期上下文。
 
 ## SQLite 表设计
