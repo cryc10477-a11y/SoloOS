@@ -67,6 +67,59 @@ function priorityWeight(priority) {
   return { 最高: 4, 高: 3, 中: 2, 低: 1 }[priority] ?? 0;
 }
 
+function getMoneyProbability(project) {
+  const score = project.score ?? emptyProject.score;
+  return Math.round(((Number(score.moneySpeed) || 0) + (Number(score.successProbability) || 0)) / 2);
+}
+
+function getProjectRisk(project) {
+  if (project.status === '暂停') return '项目已暂停，需要明确继续/放弃条件';
+  if (!project.nextAction) return '缺少下一步行动，项目无法推进';
+  if (daysSince(project.updatedAt) > 7) return '超过 7 天未更新，可能已经失焦';
+  if ((project.score?.costEfficiency ?? 50) < 35) return '投入成本偏高，需要缩小验证范围';
+  if ((project.score?.successProbability ?? 50) < 35) return '成功概率偏低，需要重新验证假设';
+  return '';
+}
+
+function buildAIAdvice(projects) {
+  const activeProjects = projects.filter((p) => !['完成', '放弃'].includes(p.status));
+  const top = [...activeProjects].sort((a, b) => getScore(b) - getScore(a))[0];
+  const risky = activeProjects.find((p) => getProjectRisk(p));
+  const noAction = activeProjects.find((p) => !p.nextAction);
+  const fastMoney = [...activeProjects].sort((a, b) => (b.score?.moneySpeed ?? 0) - (a.score?.moneySpeed ?? 0))[0];
+
+  return [
+    {
+      role: 'CEO',
+      suggestion: risky ? `暂停或重判「${risky.name}」` : top ? `集中资源推进「${top.name}」` : '先创建一个核心项目',
+      reason: risky ? getProjectRisk(risky) : top ? `综合评分 ${getScore(top)} 分，是当前最高价值项目` : '没有项目就无法形成经营闭环',
+      nextStep: risky ? '今天做出继续/暂停/放弃决定' : top?.nextAction || '补齐项目名称、目标和下一步行动',
+      projectId: risky?.id ?? top?.id
+    },
+    {
+      role: 'PM',
+      suggestion: noAction ? `为「${noAction.name}」补充下一步行动` : '把今日任务控制在 3 件以内',
+      reason: noAction ? '没有下一步行动的项目无法进入执行态' : '个人创业最怕任务分散',
+      nextStep: noAction ? '写一个 30 分钟内能完成的动作' : '从驾驶舱下一步行动中选择最关键任务',
+      projectId: noAction?.id
+    },
+    {
+      role: '市场',
+      suggestion: fastMoney ? `优先验证「${fastMoney.name}」的付费信号` : '先找一个最快能产生现金流的项目',
+      reason: fastMoney ? `赚钱速度评分 ${fastMoney.score?.moneySpeed ?? 0}` : '没有现金流信号，项目优先级会失真',
+      nextStep: fastMoney?.nextAction || '设计一个最小付费验证动作',
+      projectId: fastMoney?.id
+    },
+    {
+      role: '运营',
+      suggestion: '每天只维护最新更新和风险提醒',
+      reason: 'SoloOS 应该推进项目，而不是制造填表负担',
+      nextStep: '更新今天完成了什么、卡在哪里、下一步做什么',
+      projectId: top?.id
+    }
+  ];
+}
+
 function withTimeline(project, event, content) {
   return {
     ...project,
@@ -102,7 +155,7 @@ export default function App() {
   const [form, setForm] = useState(emptyProject);
   const [message, setMessage] = useState('');
   const [drafts, setDrafts] = useState({
-    decision: '', task: '', discussion: '',
+    decision: '', decisionReason: '', decisionResult: '', task: '', discussion: '',
     aiSuggestion: '', aiSource: 'Codex'
   });
   const [todayTasks, setTodayTasks] = useState([]);
@@ -283,6 +336,7 @@ export default function App() {
         {message && <div className="notice">{message}</div>}
         {view === 'dashboard' && (
           <Dashboard
+            projects={projects}
             stats={stats}
             topProject={topProject}
             moneyRanked={moneyRanked}
@@ -292,6 +346,12 @@ export default function App() {
             createProject={createProject}
             todayTasks={todayTasks}
             setTodayTasks={setTodayTasks}
+          />
+        )}
+        {view === 'advice' && (
+          <AIAdviceCenter
+            projects={projects}
+            selectProject={selectProject}
           />
         )}
         {view === 'project' && (
@@ -353,6 +413,9 @@ function Sidebar({ view, setView, createProject, rankedProjects, selectedId, sel
         <button className={view === 'ai' ? 'active' : ''} onClick={() => setView('ai')}>
           <span className="nav-icon">🤖</span> AI 员工中心
         </button>
+        <button className={view === 'advice' ? 'active' : ''} onClick={() => setView('advice')}>
+          <span className="nav-icon">🧠</span> AI 建议中心
+        </button>
       </nav>
 
       <button className="primary full" onClick={createProject}>+ 新增项目</button>
@@ -378,7 +441,7 @@ function Sidebar({ view, setView, createProject, rankedProjects, selectedId, sel
 /* ────────── Dashboard ────────── */
 
 function Dashboard({
-  stats, topProject, moneyRanked, rankedProjects,
+  projects, stats, topProject, moneyRanked, rankedProjects,
   blockedDecisions, selectProject, createProject,
   todayTasks, setTodayTasks
 }) {
@@ -386,6 +449,19 @@ function Dashboard({
   const dateStr = new Intl.DateTimeFormat('zh-CN', {
     year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'
   }).format(today);
+  const aiAdvice = buildAIAdvice(projects);
+  const riskAlerts = rankedProjects
+    .map((project) => ({ ...project, risk: getProjectRisk(project) }))
+    .filter((project) => project.risk)
+    .slice(0, 4);
+  const recentUpdates = [...projects]
+    .sort((a, b) => new Date(b.updatedAt ?? 0) - new Date(a.updatedAt ?? 0))
+    .slice(0, 5);
+  const primaryTask = todayTasks[0] ?? (topProject?.nextAction ? {
+    title: topProject.nextAction,
+    project: topProject.name,
+    estimate: '今日推进'
+  } : null);
 
   return (
     <>
@@ -408,16 +484,28 @@ function Dashboard({
             <h3>🎯 今日最重要任务</h3>
             <span className="card-badge">聚焦</span>
           </div>
-          {todayTasks.length === 0 ? (
+          {!primaryTask ? (
             <div className="focus-empty">
               <p>还没有今日任务</p>
               <p className="muted">从下方「下一步行动」中选择任务</p>
             </div>
           ) : (
             <div className="focus-list">
-              {todayTasks.map((t, i) => (
-                <div key={i} className={`focus-item priority-${i}`}>
-                  <span className="focus-num">{i + 1}</span>
+              <div className="focus-item priority-0">
+                <span className="focus-num">1</span>
+                <div>
+                  <strong>{primaryTask.title}</strong>
+                  <small>{primaryTask.project} · {primaryTask.estimate || '今日推进'}</small>
+                </div>
+                {todayTasks.length > 0 && (
+                  <button className="focus-done" onClick={() =>
+                    setTodayTasks((prev) => prev.slice(1))
+                  }>✓</button>
+                )}
+              </div>
+              {todayTasks.slice(1, 3).map((t, i) => (
+                <div key={t.title} className={`focus-item priority-${i + 1}`}>
+                  <span className="focus-num">{i + 2}</span>
                   <div>
                     <strong>{t.title}</strong>
                     <small>{t.project} · 预计 {t.estimate || '?'}</small>
@@ -436,31 +524,10 @@ function Dashboard({
           <div className="card-header">
             <h3>📊 项目雷达</h3>
           </div>
-          <div className="radar-grid">
-            <div className="radar-col">
-              <p className="radar-label">赚钱速度</p>
-              {moneyRanked.slice(0, 6).map((p) => (
-                <button key={p.id} className="radar-bar" onClick={() => selectProject(p.id)}>
-                  <span>{p.name}</span>
-                  <span className="bar-track">
-                    <span className="bar-fill money" style={{ width: `${p.score?.moneySpeed ?? 50}%` }} />
-                  </span>
-                  <strong>{p.score?.moneySpeed ?? 50}</strong>
-                </button>
-              ))}
-            </div>
-            <div className="radar-col">
-              <p className="radar-label">重要程度</p>
-              {rankedProjects.slice(0, 6).map((p) => (
-                <button key={p.id} className="radar-bar" onClick={() => selectProject(p.id)}>
-                  <span>{p.name}</span>
-                  <span className="bar-track">
-                    <span className="bar-fill important" style={{ width: `${getScore(p)}%` }} />
-                  </span>
-                  <strong>{getScore(p)}</strong>
-                </button>
-              ))}
-            </div>
+          <ProjectRadar2D projects={rankedProjects} selectProject={selectProject} />
+          <div className="radar-hint">
+            <span>X轴：赚钱速度</span>
+            <span>Y轴：成功概率</span>
           </div>
         </article>
 
@@ -508,6 +575,30 @@ function Dashboard({
           </div>
         </article>
 
+        {/* ── AI 建议 ── */}
+        <article className="dash-card dash-ai-advice">
+          <div className="card-header">
+            <h3>🧠 AI 建议中心</h3>
+            <span className="card-badge">自动</span>
+          </div>
+          <div className="advice-list compact">
+            {aiAdvice.map((advice) => (
+              <button
+                key={advice.role}
+                className="advice-item"
+                onClick={() => advice.projectId && selectProject(advice.projectId)}
+              >
+                <span className="advice-role">{advice.role}</span>
+                <div>
+                  <strong>{advice.suggestion}</strong>
+                  <small>原因：{advice.reason}</small>
+                  <small>下一步：{advice.nextStep}</small>
+                </div>
+              </button>
+            ))}
+          </div>
+        </article>
+
         {/* ── 需要决策 ── */}
         <article className="dash-card dash-decisions">
           <div className="card-header">
@@ -525,6 +616,24 @@ function Dashboard({
                   <small>{b.status === '暂停' ? '已暂停' : `${b.days}天未更新`} · {b.nextAction || '无下一步行动'}</small>
                 </div>
                 <span className="decision-arrow">→</span>
+              </button>
+            ))
+          )}
+        </article>
+
+        {/* ── 风险提醒 ── */}
+        <article className="dash-card dash-risks">
+          <div className="card-header">
+            <h3>🚨 风险提醒</h3>
+            <span className="card-badge warn">{riskAlerts.length}</span>
+          </div>
+          {riskAlerts.length === 0 ? (
+            <p className="muted">暂无明显风险</p>
+          ) : (
+            riskAlerts.map((project) => (
+              <button key={project.id} className="risk-item" onClick={() => selectProject(project.id)}>
+                <strong>{project.name}</strong>
+                <small>{project.risk}</small>
               </button>
             ))
           )}
@@ -559,8 +668,52 @@ function Dashboard({
             )}
           </div>
         </article>
+
+        {/* ── 最近更新 ── */}
+        <article className="dash-card dash-recent">
+          <div className="card-header">
+            <h3>🕘 最近更新</h3>
+          </div>
+          <div className="recent-list">
+            {recentUpdates.length === 0 ? <p className="muted">暂无项目更新</p> : recentUpdates.map((project) => (
+              <button key={project.id} className="recent-row" onClick={() => selectProject(project.id)}>
+                <span>{project.name}</span>
+                <small>{project.status} · {formatDateTime(project.updatedAt)} · {project.owner || '未指定负责人'}</small>
+              </button>
+            ))}
+          </div>
+        </article>
       </section>
     </>
+  );
+}
+
+function ProjectRadar2D({ projects, selectProject }) {
+  const visibleProjects = projects.slice(0, 8);
+  return (
+    <div className="radar-2d">
+      <span className="axis x-axis">赚钱速度 →</span>
+      <span className="axis y-axis">成功概率 ↑</span>
+      <span className="quadrant q1">快钱高胜率</span>
+      <span className="quadrant q2">慢钱高胜率</span>
+      <span className="quadrant q3">慢钱低胜率</span>
+      <span className="quadrant q4">快钱低胜率</span>
+      {visibleProjects.map((project) => {
+        const x = Math.max(8, Math.min(92, project.score?.moneySpeed ?? 50));
+        const y = Math.max(8, Math.min(92, project.score?.successProbability ?? 50));
+        return (
+          <button
+            key={project.id}
+            className="radar-dot"
+            style={{ left: `${x}%`, bottom: `${y}%` }}
+            onClick={() => selectProject(project.id)}
+            title={`${project.name}：赚钱速度 ${x} / 成功概率 ${y}`}
+          >
+            {project.name.slice(0, 4)}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -690,40 +843,65 @@ function TodayWorkbench({ rankedProjects, blockedDecisions, selectProject, today
 
 /* ────────── AI Center ────────── */
 
+function AIAdviceCenter({ projects, selectProject }) {
+  const aiAdvice = buildAIAdvice(projects);
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">AI ADVICE CENTER</p>
+          <h2>AI 建议中心</h2>
+        </div>
+        <div className="topbar-stats">
+          <span className="topstat">CEO / PM / 市场 / 运营</span>
+        </div>
+      </header>
+
+      <section className="advice-center-grid">
+        {aiAdvice.map((advice) => (
+          <article key={advice.role} className="dash-card advice-card">
+            <div className="card-header">
+              <h3>{advice.role}</h3>
+              <span className="card-badge">建议</span>
+            </div>
+            <h4>{advice.suggestion}</h4>
+            <div className="advice-detail">
+              <span>原因</span>
+              <p>{advice.reason}</p>
+            </div>
+            <div className="advice-detail">
+              <span>下一步</span>
+              <p>{advice.nextStep}</p>
+            </div>
+            <button className="secondary" onClick={() => advice.projectId && selectProject(advice.projectId)}>
+              查看相关项目
+            </button>
+          </article>
+        ))}
+      </section>
+    </>
+  );
+}
+
 function AICenter({ projects, selectProject }) {
-  const aiEmployees = [
+  const fallbackProject = projects[0];
+  const employees = [
     {
-      name: 'Codex', role: '首席开发工程师', status: 'green',
-      specialty: 'React/Vue 前端 · Node.js 后端 · 数据库 · Git',
-      projects: ['AI主题商店', 'SoloOS'],
-      tasks: ['商品列表筛选功能', '搜索功能'],
-      weekly: 8,
-      tip: '下午效率最高 · 复杂任务拆成子任务'
+      name: 'CEO', status: '决策中', project: projects[0]?.name || 'SoloOS', task: '判断今天最该推进的项目', progress: 70,
+      updatedAt: '刚刚', log: ['读取项目评分', '识别暂停风险', '输出经营建议']
     },
     {
-      name: 'ChatGPT', role: '内容与策略主管', status: 'green',
-      specialty: '内容创作 · 市场分析 · 创意策划',
-      projects: ['百家号自动化', 'AI赚钱机会'],
-      tasks: ['3篇百家号草稿', '明天选题'],
-      weekly: 12,
-      tip: '需要明确的选题方向'
+      name: 'PM', status: '执行中', project: projects[1]?.name || fallbackProject?.name || 'SoloOS', task: '拆解下一步行动', progress: 55,
+      updatedAt: '10分钟前', log: ['检查缺失下一步行动', '标记阻塞项目', '生成任务拆解']
     },
     {
-      name: 'Claude', role: '深度分析与文档专家', status: 'green',
-      specialty: '深度分析 · 文档撰写 · 战略规划',
-      projects: ['SoloOS'],
-      tasks: ['产品架构文档'],
-      weekly: 5,
-      tip: '适合长文档和深度分析任务'
+      name: '市场', status: '待验证', project: projects[2]?.name || fallbackProject?.name || 'AI机会雷达', task: '验证赚钱速度与需求信号', progress: 35,
+      updatedAt: '25分钟前', log: ['扫描高赚钱速度项目', '准备市场验证动作']
     },
     {
-      name: 'WorkBuddy', role: '自动化执行专员', status: 'yellow',
-      specialty: '浏览器自动化 · 数据采集',
-      projects: ['百家号自动化'],
-      tasks: [],
-      weekly: 3,
-      tip: '等待王帅确认发布计划'
-    },
+      name: '运营', status: '待命', project: projects[3]?.name || fallbackProject?.name || '百家号自动化', task: '整理最近更新和执行日志', progress: 20,
+      updatedAt: '1小时前', log: ['等待老板分配任务', '同步项目更新时间']
+    }
   ];
 
   return (
@@ -734,71 +912,50 @@ function AICenter({ projects, selectProject }) {
           <h2>AI 员工中心</h2>
         </div>
         <div className="topbar-stats">
-          <span className="topstat">4个AI</span>
-          <span className="topstat ok">3个工作中</span>
-          <span className="topstat warn">1个等待</span>
+          <span className="topstat">4个AI员工</span>
+          <span className="topstat ok">假数据联调版</span>
         </div>
       </header>
 
-      <section className="ai-grid">
-        {aiEmployees.map((ai) => (
-          <article key={ai.name} className="dash-card ai-card">
-            <div className="card-header">
-              <div className="ai-card-title">
-                <span className={`ai-avatar ${ai.status}`}>
-                  {ai.name === 'Codex' ? 'C' : ai.name === 'ChatGPT' ? 'G' : ai.name === 'Claude' ? 'L' : 'W'}
-                </span>
+      <section className="employee-grid">
+        {employees.map((employee) => {
+          const relatedProject = projects.find((project) => project.name === employee.project) || fallbackProject;
+          return (
+            <article key={employee.name} className="dash-card employee-card">
+              <div className="employee-head">
                 <div>
-                  <h3>{ai.name}</h3>
-                  <small>{ai.role}</small>
+                  <h3>{employee.name}</h3>
+                  <small>{employee.status}</small>
                 </div>
-              </div>
-              <span className={`ai-status-badge ${ai.status}`}>
-                {ai.status === 'green' ? '🟢 工作中' : '🟡 等待中'}
-              </span>
-            </div>
-
-            <div className="ai-body">
-              <div className="ai-section">
-                <p className="ai-label">擅长领域</p>
-                <p className="ai-text">{ai.specialty}</p>
+                <span className="employee-updated">{employee.updatedAt}</span>
               </div>
 
-              <div className="ai-section">
-                <p className="ai-label">常驻项目</p>
-                <div className="ai-tags">
-                  {ai.projects.map((prj) => (
-                    <button key={prj} className="ai-tag" onClick={() => {
-                      const p = projects.find((pp) => pp.name === prj);
-                      if (p) selectProject(p.id);
-                    }}>{prj}</button>
-                  ))}
-                </div>
+              <div className="employee-row">
+                <span>当前项目</span>
+                <strong>{employee.project}</strong>
+              </div>
+              <div className="employee-row">
+                <span>当前任务</span>
+                <strong>{employee.task}</strong>
+              </div>
+              <div className="employee-progress">
+                <span style={{ width: `${employee.progress}%` }} />
+              </div>
+              <p className="employee-progress-text">进度 {employee.progress}%</p>
+
+              <div className="employee-log">
+                <p>执行日志</p>
+                {employee.log.map((item) => <small key={item}>• {item}</small>)}
               </div>
 
-              <div className="ai-section">
-                <p className="ai-label">当前任务</p>
-                {ai.tasks.length === 0 ? (
-                  <p className="muted">暂无任务</p>
-                ) : (
-                  ai.tasks.map((t) => (
-                    <div key={t} className="ai-task-row">
-                      <span className="ai-task-dot" /> {t}
-                    </div>
-                  ))
-                )}
+              <div className="employee-actions">
+                <button className="secondary" onClick={() => relatedProject && selectProject(relatedProject.id)}>查看项目</button>
+                <button className="secondary" onClick={() => window.alert(`${employee.name} 日志：\n${employee.log.join('\n')}`)}>查看日志</button>
+                <button className="primary" onClick={() => window.alert(`已模拟发送任务给 ${employee.name}：${employee.task}`)}>发送任务</button>
               </div>
-
-              <div className="ai-stats-row">
-                <span>本周: <strong>{ai.weekly} 任务</strong></span>
-              </div>
-
-              <div className="ai-tip">
-                💡 {ai.tip}
-              </div>
-            </div>
-          </article>
-        ))}
+            </article>
+          );
+        })}
       </section>
     </>
   );
@@ -848,6 +1005,16 @@ function ProjectDetail({
             {priorities.map((p) => <option key={p}>{p}</option>)}
           </select>
         </label>
+        <div className="project-kpi">
+          <span>赚钱概率</span>
+          <strong>{getMoneyProbability(form)}%</strong>
+          <small>由赚钱速度 + 成功概率自动计算</small>
+        </div>
+        <div className="project-kpi">
+          <span>最后更新</span>
+          <strong>{formatDateTime(form.updatedAt)}</strong>
+          <small>{form.status} · {form.owner || '未指定负责人'}</small>
+        </div>
         <label className="wide">
           当前目标
           <textarea value={form.currentGoal} onChange={(e) => updateForm('currentGoal', e.target.value)} placeholder="项目当前最重要目标是什么？" />
@@ -869,17 +1036,11 @@ function ProjectDetail({
       <section className="detail-grid">
         <ScorePanel form={form} updateScore={updateScore} />
         <TasksPanel form={form} drafts={drafts} updateDraft={updateDraft} addTask={addTask} updateTask={updateTask} />
-        <RecordPanel
-          title="决策记录"
-          placeholder="记录为什么开始、暂停、放弃或继续"
-          value={drafts.decision}
-          setValue={(v) => updateDraft('decision', v)}
-          onAdd={() => {
-            addRecord('decisions', { content: drafts.decision }, '新增决策', drafts.decision);
-            updateDraft('decision', '');
-          }}
-          items={form.decisions}
-          render={(item) => <p>{item.content}</p>}
+        <DecisionPanel
+          form={form}
+          drafts={drafts}
+          updateDraft={updateDraft}
+          addRecord={addRecord}
         />
         <AiPanel
           form={form} drafts={drafts} updateDraft={updateDraft}
@@ -900,6 +1061,50 @@ function ProjectDetail({
         <TimelinePanel items={form.timeline} />
       </section>
     </>
+  );
+}
+
+function DecisionPanel({ form, drafts, updateDraft, addRecord }) {
+  return (
+    <section className="panel record">
+      <h3>决策记录</h3>
+      <div className="decision-form">
+        <input
+          value={drafts.decision}
+          onChange={(e) => updateDraft('decision', e.target.value)}
+          placeholder="决策内容，例如：暂停AI机会雷达"
+        />
+        <input
+          value={drafts.decisionReason}
+          onChange={(e) => updateDraft('decisionReason', e.target.value)}
+          placeholder="决策原因，例如：投入过高"
+        />
+        <input
+          value={drafts.decisionResult}
+          onChange={(e) => updateDraft('decisionResult', e.target.value)}
+          placeholder="结果，例如：待验证"
+        />
+        <button onClick={() => {
+          addRecord('decisions', {
+            content: drafts.decision,
+            reason: drafts.decisionReason,
+            result: drafts.decisionResult
+          }, '新增决策', drafts.decision);
+          updateDraft('decision', '');
+          updateDraft('decisionReason', '');
+          updateDraft('decisionResult', '');
+        }}>添加决策</button>
+      </div>
+      <div className="records">
+        {form.decisions.length === 0 ? <p className="muted">暂无决策</p> : form.decisions.map((item) => (
+          <article key={item.id} className="record-item decision-record">
+            <p><strong>{formatDate(item.createdAt)}</strong> · {item.content}</p>
+            <small>原因：{item.reason || '未记录'}</small>
+            <small>结果：{item.result || '未记录'}</small>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
